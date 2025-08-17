@@ -38,7 +38,7 @@ const db = admin.database();
 
 // Initialize Discord client
 const client = new Client({ 
-  intents: [GatewayIntentBits.Guilds] 
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] 
 });
 
 // Slash commands
@@ -682,9 +682,24 @@ async function handleUsersFromTimezone(interaction) {
 client.once('ready', async () => {
   console.log(`Logged in as ${client.user.tag}!`);
   console.log(`Bot is in ${client.guilds.cache.size} guilds`);
+  
+  // Force command registration
+  console.log('Force refreshing all commands...');
   await deployCommands();
+  
   console.log('Bot is ready and commands are being registered!');
+  console.log(`Total commands to register: ${commands.length}`);
+  commands.forEach(cmd => console.log(`- ${cmd.name}`));
 });
 
 // Login to Discord
 client.login(process.env.DISCORD_TOKEN);
+
+// Manual command refresh (for debugging)
+client.on('messageCreate', async (message) => {
+  if (message.content === '!refresh-commands' && message.author.id === process.env.DISCORD_OWNER_ID) {
+    await message.reply('Refreshing commands...');
+    await deployCommands();
+    await message.reply('Commands refreshed!');
+  }
+});
