@@ -38,7 +38,7 @@ const db = admin.database();
 
 // Initialize Discord client
 const client = new Client({ 
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] 
+  intents: [GatewayIntentBits.Guilds] 
 });
 
 // Slash commands
@@ -694,12 +694,3 @@ client.once('ready', async () => {
 
 // Login to Discord
 client.login(process.env.DISCORD_TOKEN);
-
-// Manual command refresh (for debugging)
-client.on('messageCreate', async (message) => {
-  if (message.content === '!refresh-commands' && message.author.id === process.env.DISCORD_OWNER_ID) {
-    await message.reply('Refreshing commands...');
-    await deployCommands();
-    await message.reply('Commands refreshed!');
-  }
-});
