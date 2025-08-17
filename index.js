@@ -256,7 +256,7 @@ client.on('interactionCreate', async interaction => {
     }
   } else if (interaction.isButton()) {
     // Handle pagination buttons for blacklisted command
-    if (interaction.customId.startsWith('blacklist_page_')) {
+    if (interaction.customId.startsWith('blacklist_')) {
       await handleBlacklistPagination(interaction);
     }
   }
@@ -594,54 +594,34 @@ async function sendBlacklistPage(interaction, users, page, totalPages) {
     // First button
     row.addComponents(
       new ButtonBuilder()
-        .setCustomId('blacklist_page_1')
+        .setCustomId('blacklist_first')
         .setLabel('First')
         .setStyle(ButtonStyle.Secondary)
         .setDisabled(page === 1)
     );
     
     // Previous button
-    if (page > 1) {
-      row.addComponents(
-        new ButtonBuilder()
-          .setCustomId(`blacklist_page_${page - 1}`)
-          .setLabel('Previous')
-          .setStyle(ButtonStyle.Primary)
-          .setDisabled(false)
-      );
-    } else {
-      row.addComponents(
-        new ButtonBuilder()
-          .setCustomId('blacklist_page_1')
-          .setLabel('Previous')
-          .setStyle(ButtonStyle.Primary)
-          .setDisabled(true)
-      );
-    }
+    row.addComponents(
+      new ButtonBuilder()
+        .setCustomId('blacklist_prev')
+        .setLabel('Previous')
+        .setStyle(ButtonStyle.Primary)
+        .setDisabled(page === 1)
+    );
     
     // Next button
-    if (page < totalPages) {
-      row.addComponents(
-        new ButtonBuilder()
-          .setCustomId(`blacklist_page_${page + 1}`)
-          .setLabel('Next')
-          .setStyle(ButtonStyle.Primary)
-          .setDisabled(false)
-      );
-    } else {
-      row.addComponents(
-        new ButtonBuilder()
-          .setCustomId(`blacklist_page_${totalPages}`)
-          .setLabel('Next')
-          .setStyle(ButtonStyle.Primary)
-          .setDisabled(true)
-      );
-    }
+    row.addComponents(
+      new ButtonBuilder()
+        .setCustomId('blacklist_next')
+        .setLabel('Next')
+        .setStyle(ButtonStyle.Primary)
+        .setDisabled(page === totalPages)
+    );
     
     // Last button
     row.addComponents(
       new ButtonBuilder()
-        .setCustomId(`blacklist_page_${totalPages}`)
+        .setCustomId('blacklist_last')
         .setLabel('Last')
         .setStyle(ButtonStyle.Secondary)
         .setDisabled(page === totalPages)
@@ -660,7 +640,39 @@ async function sendBlacklistPage(interaction, users, page, totalPages) {
 async function handleBlacklistPagination(interaction) {
   await interaction.deferUpdate();
   
-  const pageNumber = parseInt(interaction.customId.split('_')[2]);
+  // Get current page from the embed title
+  const currentEmbed = interaction.message.embeds[0];
+  const titleMatch = currentEmbed.title.match(/Page (\d+)\/(\d+)/);
+  
+  if (!titleMatch) {
+    const embed = new EmbedBuilder()
+      .setColor(0xFF0000)
+      .setTitle('Error')
+      .setDescription('Unable to determine current page.');
+    return interaction.editReply({ embeds: [embed], components: [] });
+  }
+  
+  const currentPage = parseInt(titleMatch[1]);
+  const totalPages = parseInt(titleMatch[2]);
+  
+  let newPage;
+  switch (interaction.customId) {
+    case 'blacklist_first':
+      newPage = 1;
+      break;
+    case 'blacklist_prev':
+      newPage = Math.max(1, currentPage - 1);
+      break;
+    case 'blacklist_next':
+      newPage = Math.min(totalPages, currentPage + 1);
+      break;
+    case 'blacklist_last':
+      newPage = totalPages;
+      break;
+    default:
+      newPage = currentPage;
+  }
+  
   const allBlacklisted = await getBlacklistData();
   
   if (!allBlacklisted) {
@@ -672,12 +684,8 @@ async function handleBlacklistPagination(interaction) {
   }
   
   const blacklistedUsers = Object.values(allBlacklisted);
-  const totalPages = Math.ceil(blacklistedUsers.length / 10);
   
-  // Ensure page number is valid
-  const validPage = Math.max(1, Math.min(pageNumber, totalPages));
-  
-  await sendBlacklistPage(interaction, blacklistedUsers, validPage, totalPages);
+  await sendBlacklistPage(interaction, blacklistedUsers, newPage, totalPages);
 }
 
 async function handleUsersFromTimezone(interaction) {
