@@ -586,35 +586,67 @@ async function sendBlacklistPage(interaction, users, page, totalPages) {
     .setDescription(userList)
     .setFooter({ text: `Total blacklisted users: ${users.length}` });
 
-  const row = new ActionRowBuilder();
-  
+  const options = { embeds: [embed] };
+
   if (totalPages > 1) {
+    const row = new ActionRowBuilder();
+    
+    // First button
     row.addComponents(
       new ButtonBuilder()
         .setCustomId('blacklist_page_1')
         .setLabel('First')
         .setStyle(ButtonStyle.Secondary)
-        .setDisabled(page === 1),
-      new ButtonBuilder()
-        .setCustomId(`blacklist_page_${page - 1}`)
-        .setLabel('Previous')
-        .setStyle(ButtonStyle.Primary)
-        .setDisabled(page === 1),
-      new ButtonBuilder()
-        .setCustomId(`blacklist_page_${page + 1}`)
-        .setLabel('Next')
-        .setStyle(ButtonStyle.Primary)
-        .setDisabled(page === totalPages),
+        .setDisabled(page === 1)
+    );
+    
+    // Previous button
+    if (page > 1) {
+      row.addComponents(
+        new ButtonBuilder()
+          .setCustomId(`blacklist_page_${page - 1}`)
+          .setLabel('Previous')
+          .setStyle(ButtonStyle.Primary)
+          .setDisabled(false)
+      );
+    } else {
+      row.addComponents(
+        new ButtonBuilder()
+          .setCustomId('blacklist_page_1')
+          .setLabel('Previous')
+          .setStyle(ButtonStyle.Primary)
+          .setDisabled(true)
+      );
+    }
+    
+    // Next button
+    if (page < totalPages) {
+      row.addComponents(
+        new ButtonBuilder()
+          .setCustomId(`blacklist_page_${page + 1}`)
+          .setLabel('Next')
+          .setStyle(ButtonStyle.Primary)
+          .setDisabled(false)
+      );
+    } else {
+      row.addComponents(
+        new ButtonBuilder()
+          .setCustomId(`blacklist_page_${totalPages}`)
+          .setLabel('Next')
+          .setStyle(ButtonStyle.Primary)
+          .setDisabled(true)
+      );
+    }
+    
+    // Last button
+    row.addComponents(
       new ButtonBuilder()
         .setCustomId(`blacklist_page_${totalPages}`)
         .setLabel('Last')
         .setStyle(ButtonStyle.Secondary)
         .setDisabled(page === totalPages)
     );
-  }
 
-  const options = { embeds: [embed] };
-  if (totalPages > 1) {
     options.components = [row];
   }
 
@@ -631,12 +663,21 @@ async function handleBlacklistPagination(interaction) {
   const pageNumber = parseInt(interaction.customId.split('_')[2]);
   const allBlacklisted = await getBlacklistData();
   
-  if (!allBlacklisted) return;
+  if (!allBlacklisted) {
+    const embed = new EmbedBuilder()
+      .setColor(0xFF0000)
+      .setTitle('Error')
+      .setDescription('No blacklist data found.');
+    return interaction.editReply({ embeds: [embed], components: [] });
+  }
   
   const blacklistedUsers = Object.values(allBlacklisted);
   const totalPages = Math.ceil(blacklistedUsers.length / 10);
   
-  await sendBlacklistPage(interaction, blacklistedUsers, pageNumber, totalPages);
+  // Ensure page number is valid
+  const validPage = Math.max(1, Math.min(pageNumber, totalPages));
+  
+  await sendBlacklistPage(interaction, blacklistedUsers, validPage, totalPages);
 }
 
 async function handleUsersFromTimezone(interaction) {
