@@ -1,4 +1,3 @@
-
 {
   "name": "discord-firebase-bot",
   "version": "1.0.0",
@@ -10,7 +9,8 @@
   },
   "dependencies": {
     "discord.js": "^14.14.1",
-    "firebase-admin": "^12.0.0"
+    "firebase-admin": "^12.0.0",
+    "axios": "^1.6.0"
   },
   "engines": {
     "node": ">=18.0.0"
