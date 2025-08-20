@@ -140,7 +140,12 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName('blacklisted')
-    .setDescription('Shows a list of all blacklisted users')
+    .setDescription('Shows a list of all blacklisted users'),
+
+  new SlashCommandBuilder()
+    .setName('syncblacklist')
+    .setDescription('Sync all existing blacklisted users to Roblox (Admin only)')
+    .setDefaultMemberPermissions('0') // Admin only
 ];
 
 // Register slash commands
@@ -200,6 +205,116 @@ async function getRobloxUsername(userId) {
   }
 }
 
+// Helper function to restrict user in Roblox
+async function restrictRobloxUser(userId, publicReason, hiddenReason) {
+  const universeIds = process.env.ROBLOX_UNIVERSE_IDS.split(',').map(id => id.trim());
+  const results = [];
+
+  for (const universeId of universeIds) {
+    try {
+      const response = await axios.patch(
+        `https://apis.roblox.com/cloud/v2/universes/${universeId}/user-restrictions/${userId}`,
+        {
+          gameJoinRestriction: {
+            active: true,
+            duration: "315360000s", // ~10 years (indefinite)
+            privateReason: hiddenReason || `Blacklisted: ${publicReason}`,
+            displayReason: publicReason || "You have been blacklisted.",
+            excludeAltAccounts: false
+          }
+        },
+        {
+          headers: {
+            'content-type': 'application/json',
+            'x-api-key': process.env.ROBLOX_API_KEY
+          }
+        }
+      );
+      
+      results.push({
+        universeId,
+        success: true,
+        data: response.data
+      });
+      
+      console.log(`Successfully restricted user ${userId} in universe ${universeId}`);
+      
+    } catch (error) {
+      console.error(`Failed to restrict user ${userId} in universe ${universeId}:`, error.response?.data || error.message);
+      results.push({
+        universeId,
+        success: false,
+        error: error.response?.data || error.message,
+        status: error.response?.status
+      });
+    }
+  }
+
+  const successCount = results.filter(r => r.success).length;
+  const totalCount = results.length;
+
+  return {
+    success: successCount > 0,
+    partial: successCount > 0 && successCount < totalCount,
+    results,
+    successCount,
+    totalCount
+  };
+}
+
+// Helper function to unrestrict user in Roblox
+async function unrestrictRobloxUser(userId) {
+  const universeIds = process.env.ROBLOX_UNIVERSE_IDS.split(',').map(id => id.trim());
+  const results = [];
+
+  for (const universeId of universeIds) {
+    try {
+      const response = await axios.patch(
+        `https://apis.roblox.com/cloud/v2/universes/${universeId}/user-restrictions/${userId}`,
+        {
+          gameJoinRestriction: {
+            active: false
+          }
+        },
+        {
+          headers: {
+            'content-type': 'application/json',
+            'x-api-key': process.env.ROBLOX_API_KEY
+          }
+        }
+      );
+      
+      results.push({
+        universeId,
+        success: true,
+        data: response.data
+      });
+      
+      console.log(`Successfully unrestricted user ${userId} in universe ${universeId}`);
+      
+    } catch (error) {
+      console.error(`Failed to unrestrict user ${userId} in universe ${universeId}:`, error.response?.data || error.message);
+      results.push({
+        universeId,
+        success: false,
+        error: error.response?.data || error.message,
+        status: error.response?.status
+      });
+    }
+  }
+
+  const successCount = results.filter(r => r.success).length;
+  const totalCount = results.length;
+
+  return {
+    success: successCount > 0,
+    partial: successCount > 0 && successCount < totalCount,
+    results,
+    successCount,
+    totalCount
+  };
+}
+
 // Command handlers
 client.on('interactionCreate', async interaction => {
   if (interaction.isChatInputCommand()) {
@@ -239,6 +354,9 @@ client.on('interactionCreate', async interaction => {
           break;
         case 'blacklisted':
           await handleBlacklistedList(interaction);
+          break;
+        case 'syncblacklist':
+          await handleSyncBlacklist(interaction);
           break;
       }
     } catch (error) {
@@ -459,7 +577,7 @@ async function handleAddBlacklist(interaction) {
   // Get username from Roblox API
   const username = await getRobloxUsername(userId);
 
-  // Add to blacklist
+  // Prepare blacklist data
   const blacklistData = {
     UserId: userId,
     Username: username,
@@ -468,31 +586,81 @@ async function handleAddBlacklist(interaction) {
     DateAdded: new Date().toISOString()
   };
 
+  let firebaseSuccess = false;
+  let robloxSuccess = false;
+  let firebaseError = null;
+  let robloxError = null;
+
+  // Try to add to Firebase
   try {
     await db.ref(`Blacklist/${userId}`).set(blacklistData);
-    
-    const embed = new EmbedBuilder()
-      .setColor(0xFF4444)
-      .setTitle('User Blacklisted')
-      .addFields(
-        { name: 'User ID', value: userId, inline: true },
-        { name: 'Username', value: username, inline: true },
-        { name: 'Public Reason', value: publicReason, inline: false },
-        { name: 'Hidden Reason', value: hiddenReason, inline: false }
-      );
-
-    await interaction.editReply({ embeds: [embed] });
+    firebaseSuccess = true;
+    console.log(`Successfully added ${username} (${userId}) to Firebase blacklist`);
   } catch (error) {
-    console.error('Error adding to blacklist:', error);
-    const embed = new EmbedBuilder()
-      .setColor(0xFF0000)
-      .setTitle('Error')
-      .setDescription('Failed to add user to blacklist.');
-    await interaction.editReply({ embeds: [embed] });
+    firebaseError = error.message;
+    console.error('Firebase blacklist add failed:', error);
   }
+
+  // Try to restrict in Roblox
+  if (process.env.ROBLOX_API_KEY && process.env.ROBLOX_UNIVERSE_IDS) {
+    const robloxResult = await restrictRobloxUser(userId, publicReason, hiddenReason);
+    if (robloxResult.success) {
+      robloxSuccess = true;
+      if (robloxResult.partial) {
+        console.log(`Partially restricted ${username} (${userId}) in Roblox: ${robloxResult.successCount}/${robloxResult.totalCount} universes`);
+      } else {
+        console.log(`Successfully restricted ${username} (${userId}) in all ${robloxResult.totalCount} Roblox universes`);
+      }
+    } else {
+      robloxError = `Failed in all universes. First error: ${robloxResult.results[0]?.error}`;
+      console.error('Roblox restriction failed:', robloxResult.results);
+    }
+  } else {
+    console.warn('Roblox API key or Universe IDs not configured, skipping Roblox restriction');
+  }
+
+  // Create response based on results
+  const embed = new EmbedBuilder()
+    .addFields(
+      { name: 'User ID', value: userId, inline: true },
+      { name: 'Username', value: username, inline: true },
+      { name: 'Public Reason', value: publicReason, inline: false },
+      { name: 'Hidden Reason', value: hiddenReason, inline: false }
+    );
+
+  if (firebaseSuccess && robloxSuccess) {
+    embed.setColor(0x00FF00)
+      .setTitle('✅ User Successfully Blacklisted')
+      .setDescription('User has been added to Firebase blacklist and restricted in Roblox.');
+  } else if (firebaseSuccess && !robloxSuccess) {
+    embed.setColor(0xFFAA00)
+      .setTitle('⚠️ Partial Success')
+      .setDescription('User added to Firebase blacklist, but Roblox restriction failed.')
+      .addFields({ name: 'Roblox Error', value: `${robloxError}`, inline: false });
+  } else if (!firebaseSuccess && robloxSuccess) {
+    embed.setColor(0xFFAA00)
+      .setTitle('⚠️ Partial Success')
+      .setDescription('User restricted in Roblox, but Firebase blacklist add failed.')
+      .addFields({ name: 'Firebase Error', value: `${firebaseError}`, inline: false });
+  } else {
+    embed.setColor(0xFF0000)
+      .setTitle('❌ Blacklist Failed')
+      .setDescription('Both Firebase and Roblox operations failed.');
+    
+    if (firebaseError) {
+      embed.addFields({ name: 'Firebase Error', value: `${firebaseError}`, inline: false });
+    }
+    if (robloxError) {
+      embed.addFields({ name: 'Roblox Error', value: `${robloxError}`, inline: false });
+    }
+  }
+
+  await interaction.editReply({ embeds: [embed] });
 }
 
 async function handleRemoveBlacklist(interaction) {
+  await interaction.deferReply();
+  
   const userId = interaction.options.getString('userid');
 
   // Check if user is blacklisted
@@ -502,26 +670,78 @@ async function handleRemoveBlacklist(interaction) {
       .setColor(0xFF0000)
       .setTitle('User Not Found')
       .setDescription(`User ID ${userId} is not blacklisted.`);
-    return interaction.reply({ embeds: [embed], ephemeral: true });
+    return interaction.editReply({ embeds: [embed] });
   }
 
+  const username = blacklistData.Username || 'Unknown';
+  let firebaseSuccess = false;
+  let robloxSuccess = false;
+  let firebaseError = null;
+  let robloxError = null;
+
+  // Try to remove from Firebase
   try {
     await db.ref(`Blacklist/${userId}`).remove();
-    
-    const embed = new EmbedBuilder()
-      .setColor(0x00FF00)
-      .setTitle('User Removed from Blacklist')
-      .setDescription(`User ${blacklistData.Username || userId} (ID: ${userId}) has been removed from the blacklist.`);
-
-    await interaction.reply({ embeds: [embed] });
+    firebaseSuccess = true;
+    console.log(`Successfully removed ${username} (${userId}) from Firebase blacklist`);
   } catch (error) {
-    console.error('Error removing from blacklist:', error);
-    const embed = new EmbedBuilder()
-      .setColor(0xFF0000)
-      .setTitle('Error')
-      .setDescription('Failed to remove user from blacklist.');
-    await interaction.reply({ embeds: [embed] });
+    firebaseError = error.message;
+    console.error('Firebase blacklist removal failed:', error);
   }
+
+  // Try to unrestrict in Roblox
+  if (process.env.ROBLOX_API_KEY && process.env.ROBLOX_UNIVERSE_IDS) {
+    const robloxResult = await unrestrictRobloxUser(userId);
+    if (robloxResult.success) {
+      robloxSuccess = true;
+      if (robloxResult.partial) {
+        console.log(`Partially unrestricted ${username} (${userId}) in Roblox: ${robloxResult.successCount}/${robloxResult.totalCount} universes`);
+      } else {
+        console.log(`Successfully unrestricted ${username} (${userId}) in all ${robloxResult.totalCount} Roblox universes`);
+      }
+    } else {
+      robloxError = `Failed in all universes. First error: ${robloxResult.results[0]?.error}`;
+      console.error('Roblox unrestriction failed:', robloxResult.results);
+    }
+  } else {
+    console.warn('Roblox API key or Universe IDs not configured, skipping Roblox unrestriction');
+  }
+
+  // Create response based on results
+  const embed = new EmbedBuilder()
+    .addFields(
+      { name: 'User ID', value: userId, inline: true },
+      { name: 'Username', value: username, inline: true }
+    );
+
+  if (firebaseSuccess && robloxSuccess) {
+    embed.setColor(0x00FF00)
+      .setTitle('✅ User Successfully Removed from Blacklist')
+      .setDescription('User has been removed from Firebase blacklist and unrestricted in Roblox.');
+  } else if (firebaseSuccess && !robloxSuccess) {
+    embed.setColor(0xFFAA00)
+      .setTitle('⚠️ Partial Success')
+      .setDescription('User removed from Firebase blacklist, but Roblox unrestriction failed.')
+      .addFields({ name: 'Roblox Error', value: `${robloxError}`, inline: false });
+  } else if (!firebaseSuccess && robloxSuccess) {
+    embed.setColor(0xFFAA00)
+      .setTitle('⚠️ Partial Success')
+      .setDescription('User unrestricted in Roblox, but Firebase blacklist removal failed.')
+      .addFields({ name: 'Firebase Error', value: `${firebaseError}`, inline: false });
+  } else {
+    embed.setColor(0xFF0000)
+      .setTitle('❌ Removal Failed')
+      .setDescription('Both Firebase and Roblox operations failed.');
+    
+    if (firebaseError) {
+      embed.addFields({ name: 'Firebase Error', value: `${firebaseError}`, inline: false });
+    }
+    if (robloxError) {
+      embed.addFields({ name: 'Roblox Error', value: `${robloxError}`, inline: false });
+    }
+  }
+
+  await interaction.editReply({ embeds: [embed] });
 }
 
 async function handleViewBlacklist(interaction) {
@@ -686,6 +906,258 @@ async function handleBlacklistPagination(interaction) {
   const blacklistedUsers = Object.values(allBlacklisted);
   
   await sendBlacklistPage(interaction, blacklistedUsers, newPage, totalPages);
+}
+
+// Sync all existing blacklisted users to Roblox
+async function handleSyncBlacklist(interaction) {
+  await interaction.deferReply();
+  
+  // Get all blacklisted users
+  const allBlacklisted = await getBlacklistData();
+  
+  if (!allBlacklisted || Object.keys(allBlacklisted).length === 0) {
+    const embed = new EmbedBuilder()
+      .setColor(0xFFAA00)
+      .setTitle('No Blacklisted Users')
+      .setDescription('No users found in the blacklist to sync.');
+    return interaction.editReply({ embeds: [embed] });
+  }
+
+  const blacklistedUsers = Object.values(allBlacklisted);
+  const totalUsers = blacklistedUsers.length;
+  
+  const embed = new EmbedBuilder()
+    .setColor(0x00AAFF)
+    .setTitle('🔄 Syncing Blacklist to Roblox')
+    .setDescription(`Starting sync for ${totalUsers} blacklisted users...`)
+    .addFields({ name: 'Status', value: '⏳ Processing...', inline: false });
+  
+  await interaction.editReply({ embeds: [embed] });
+
+  let successCount = 0;
+  let failCount = 0;
+  let partialCount = 0;
+  const errors = [];
+
+  // Process users in batches to avoid rate limits
+  const batchSize = 3; // Conservative batch size
+  for (let i = 0; i < blacklistedUsers.length; i += batchSize) {
+    const batch = blacklistedUsers.slice(i, i + batchSize);
+    
+    // Process batch in parallel
+    const promises = batch.map(async (userData) => {
+      const userId = userData.UserId;
+      const publicReason = userData.PublicReason || 'Blacklisted user';
+      const hiddenReason = userData.HiddenReason || 'No additional details';
+      
+      try {
+        const result = await restrictRobloxUser(userId, publicReason, hiddenReason);
+        
+        if (result.success) {
+          if (result.partial) {
+            partialCount++;
+            console.log(`Partially synced ${userData.Username} (${userId}): ${result.successCount}/${result.totalCount} universes`);
+          } else {
+            successCount++;
+            console.log(`Successfully synced ${userData.Username} (${userId}) to all universes`);
+          }
+        } else {
+          failCount++;
+          const error = `${userData.Username} (${userId}): ${result.results[0]?.error || 'Unknown error'}`;
+          errors.push(error);
+          console.error(`Failed to sync ${userData.Username} (${userId}):`, result.results);
+        }
+      } catch (error) {
+        failCount++;
+        const errorMsg = `${userData.Username} (${userId}): ${error.message}`;
+        errors.push(errorMsg);
+        console.error(`Exception syncing ${userData.Username} (${userId}):`, error);
+      }
+    });
+
+    await Promise.all(promises);
+    
+    // Update progress
+    const processed = Math.min(i + batchSize, totalUsers);
+    const progressEmbed = new EmbedBuilder()
+      .setColor(0x00AAFF)
+      .setTitle('🔄 Syncing Blacklist to Roblox')
+      .setDescription(`Progress: ${processed}/${totalUsers} users processed`)
+      .addFields(
+        { name: 'Status', value: '⏳ Processing...', inline: false },
+        { name: 'Current Progress', value: `✅ Success: ${successCount}\n⚠️ Partial: ${partialCount}\n❌ Failed: ${failCount}`, inline: false }
+      );
+    
+    await interaction.editReply({ embeds: [progressEmbed] });
+    
+    // Delay between batches for rate limiting
+    if (i + batchSize < totalUsers) {
+      await new Promise(resolve => setTimeout(resolve, 2000)); // 2 second delay
+    }
+  }
+
+  // Final results
+  const finalEmbed = new EmbedBuilder()
+    .setTitle('✅ Blacklist Sync Complete')
+    .addFields(
+      { name: 'Total Users', value: totalUsers.toString(), inline: true },
+      { name: '✅ Fully Synced', value: successCount.toString(), inline: true },
+      { name: '⚠️ Partially Synced', value: partialCount.toString(), inline: true },
+      { name: '❌ Failed', value: failCount.toString(), inline: true }
+    );
+
+  if (successCount === totalUsers) {
+    finalEmbed.setColor(0x00FF00)
+      .setDescription('🎉 All users successfully synced to Roblox!');
+  } else if (successCount + partialCount === totalUsers) {
+    finalEmbed.setColor(0xFFAA00)
+      .setDescription('⚠️ Sync completed with some partial successes.');
+  } else if (successCount + partialCount > 0) {
+    finalEmbed.setColor(0xFFAA00)
+      .setDescription('⚠️ Sync completed with mixed results.');
+  } else {
+    finalEmbed.setColor(0xFF0000)
+      .setDescription('❌ Sync failed for all users.');
+  }
+
+  // Add error details if there are failures
+  if (errors.length > 0) {
+    const errorText = errors.slice(0, 5).join('\n'); // Show first 5 errors
+    const moreErrors = errors.length > 5 ? `\n... and ${errors.length - 5} more errors` : '';
+    finalEmbed.addFields({ 
+      name: 'Error Details', 
+      value: `\`\`\`${errorText}${moreErrors}\`\`\``, 
+      inline: false 
+    });
+  }
+
+  await interaction.editReply({ embeds: [finalEmbed] });
+}
+
+// Sync all existing blacklisted users to Roblox
+async function handleSyncBlacklist(interaction) {
+  await interaction.deferReply();
+  
+  // Get all blacklisted users
+  const allBlacklisted = await getBlacklistData();
+  
+  if (!allBlacklisted || Object.keys(allBlacklisted).length === 0) {
+    const embed = new EmbedBuilder()
+      .setColor(0xFFAA00)
+      .setTitle('No Blacklisted Users')
+      .setDescription('No users found in the blacklist to sync.');
+    return interaction.editReply({ embeds: [embed] });
+  }
+
+  const blacklistedUsers = Object.values(allBlacklisted);
+  const totalUsers = blacklistedUsers.length;
+  
+  const embed = new EmbedBuilder()
+    .setColor(0x00AAFF)
+    .setTitle('🔄 Syncing Blacklist to Roblox')
+    .setDescription(`Starting sync for ${totalUsers} blacklisted users...`)
+    .addFields({ name: 'Status', value: '⏳ Processing...', inline: false });
+  
+  await interaction.editReply({ embeds: [embed] });
+
+  let successCount = 0;
+  let failCount = 0;
+  let partialCount = 0;
+  const errors = [];
+
+  // Process users in batches to avoid rate limits
+  const batchSize = 3; // Reduced from 5 for stricter rate limiting
+  for (let i = 0; i < blacklistedUsers.length; i += batchSize) {
+    const batch = blacklistedUsers.slice(i, i + batchSize);
+    
+    // Process batch in parallel
+    const promises = batch.map(async (userData) => {
+      const userId = userData.UserId;
+      const publicReason = userData.PublicReason || 'Blacklisted user';
+      const hiddenReason = userData.HiddenReason || 'No additional details';
+      
+      try {
+        const result = await restrictRobloxUser(userId, publicReason, hiddenReason);
+        
+        if (result.success) {
+          if (result.partial) {
+            partialCount++;
+            console.log(`Partially synced ${userData.Username} (${userId}): ${result.successCount}/${result.totalCount} universes`);
+          } else {
+            successCount++;
+            console.log(`Successfully synced ${userData.Username} (${userId}) to all universes`);
+          }
+        } else {
+          failCount++;
+          const error = `${userData.Username} (${userId}): ${result.results[0]?.error || 'Unknown error'}`;
+          errors.push(error);
+          console.error(`Failed to sync ${userData.Username} (${userId}):`, result.results);
+        }
+      } catch (error) {
+        failCount++;
+        const errorMsg = `${userData.Username} (${userId}): ${error.message}`;
+        errors.push(errorMsg);
+        console.error(`Exception syncing ${userData.Username} (${userId}):`, error);
+      }
+    });
+
+    await Promise.all(promises);
+    
+    // Update progress
+    const processed = Math.min(i + batchSize, totalUsers);
+    const progressEmbed = new EmbedBuilder()
+      .setColor(0x00AAFF)
+      .setTitle('🔄 Syncing Blacklist to Roblox')
+      .setDescription(`Progress: ${processed}/${totalUsers} users processed`)
+      .addFields(
+        { name: 'Status', value: '⏳ Processing...', inline: false },
+        { name: 'Current Progress', value: `✅ Success: ${successCount}\n⚠️ Partial: ${partialCount}\n❌ Failed: ${failCount}`, inline: false }
+      );
+    
+    await interaction.editReply({ embeds: [progressEmbed] });
+    
+    // Longer delay between batches for stricter rate limiting
+    if (i + batchSize < totalUsers) {
+      await new Promise(resolve => setTimeout(resolve, 2000)); // 2 second delay
+    }
+  }
+
+  // Final results
+  const finalEmbed = new EmbedBuilder()
+    .setTitle('✅ Blacklist Sync Complete')
+    .addFields(
+      { name: 'Total Users', value: totalUsers.toString(), inline: true },
+      { name: '✅ Fully Synced', value: successCount.toString(), inline: true },
+      { name: '⚠️ Partially Synced', value: partialCount.toString(), inline: true },
+      { name: '❌ Failed', value: failCount.toString(), inline: true }
+    );
+
+  if (successCount === totalUsers) {
+    finalEmbed.setColor(0x00FF00)
+      .setDescription('🎉 All users successfully synced to Roblox!');
+  } else if (successCount + partialCount === totalUsers) {
+    finalEmbed.setColor(0xFFAA00)
+      .setDescription('⚠️ Sync completed with some partial successes.');
+  } else if (successCount + partialCount > 0) {
+    finalEmbed.setColor(0xFFAA00)
+      .setDescription('⚠️ Sync completed with mixed results.');
+  } else {
+    finalEmbed.setColor(0xFF0000)
+      .setDescription('❌ Sync failed for all users.');
+  }
+
+  // Add error details if there are failures
+  if (errors.length > 0) {
+    const errorText = errors.slice(0, 5).join('\n'); // Show first 5 errors
+    const moreErrors = errors.length > 5 ? `\n... and ${errors.length - 5} more errors` : '';
+    finalEmbed.addFields({ 
+      name: 'Error Details', 
+      value: `\`\`\`${errorText}${moreErrors}\`\`\``, 
+      inline: false 
+    });
+  }
+
+  await interaction.editReply({ embeds: [finalEmbed] });
 }
 
 async function handleUsersFromTimezone(interaction) {
