@@ -142,8 +142,9 @@ The bot integrates with Roblox's Open Cloud API to:
 - Provide detailed error handling and status reporting
 
 ### Required Roblox Permissions
-- `universe-messaging-service:publish` (for messaging)
-- `universe-user-restrictions:write` (for bans)
+Your Open Cloud API key must have the following permissions for each game universe:
+- **User Restrictions: Read** - View existing player restrictions
+- **User Restrictions: Write** - Create and modify player restrictions
 
 ## Features in Detail
 
